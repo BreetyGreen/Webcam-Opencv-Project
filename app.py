@@ -155,11 +155,6 @@ class Faceemotion(VideoTransformerBase):
         self.stop_processing = False
         self.message_requested = False
 
-    def request_message(self):
-        self.final_message = get_comforting_message(self.final_emotion,
-                                                    "请给我一段安慰生气情绪的句子，使用中文回答。请告诉他你理解他的愤怒，并且会支持他度过这段时间。你可以举例说明如何理解和支持对方。")
-        self.buffer = []
-
     # 定义一个方法处理每一帧视频，self是类的实例，frame是当前视频帧
     def recv(self, frame):
         # 将视频帧转换为NumPy数组格式(BGR，每个像素包含蓝、绿、红三种颜色)。NumPy数组是OpenCV处理图像的标准格式。
@@ -223,9 +218,6 @@ class Faceemotion(VideoTransformerBase):
 
                 if len(self.buffer) >= self.buffer_size:
                     self.final_emotion = max(set(self.buffer), key=self.buffer.count)
-                    if not self.message_requested:
-                        self.message_requested = True
-                        self.request_message()
 
                 # 将情绪标签转换为字符串，方便在图像上绘制
                 # output = str(finalout)
@@ -290,7 +282,6 @@ def main():
             if ctx.video_processor.final_emotion in emotion_prompts:
                 prompt = emotion_prompts[ctx.video_processor.final_emotion]
                 comforting_message = get_comforting_message(ctx.video_processor.final_emotion, prompt)
-                st.write("检测到的情绪：", ctx.video_processor.final_emotion)
 
                 st.write("检测到的情绪：", ctx.video_processor.final_emotion)
                 st.write("安慰话语：", comforting_message)
