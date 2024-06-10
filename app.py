@@ -64,56 +64,56 @@
                   这种一致性对模型的训练和预测非常重要，可以减少模型在不同数据分布上的性能波动。
 """
 
-# numpy:一个用于数组处理的库
-import numpy as np
+import os
+
 # cv2:OpenCV库，用于计算机视觉任务
 import cv2
+# numpy:一个用于数组处理的库
+import numpy as np
 # streamlit:一个用于构建数据应用程序的框架
 import streamlit as st
-
-import os
-import openai
+from av import VideoFrame
 from dotenv import load_dotenv
-
-from tensorflow import keras
-
 # Keras是TensorFlow的高级API，用于构建和训练神经网络模型
 # model_from_json 函数用于从JSON格式的字符串中加载Keras模型。
 from keras.models import model_from_json
 # img_to_array 函数用于将图像对象(例如PIL图像)转换为NumPy数组。
 # NumPy数组是深度学习模型通常需要的输入格式
 from keras.preprocessing.image import img_to_array
-
+from openai import OpenAI
 # streamlit_webrtc 一个Streamlit的扩展库，用于处理实时WebRTC视频流
 from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, RTCConfiguration, WebRtcMode
 
 # 使用一个字典将情绪分类的索引映射到对应的情绪标签
 emotion_dict = {0: 'angry', 1: 'happy', 2: 'neutral', 3: 'sad', 4: 'surprise'}
 
-# 加载 .env 文件中的环境变量
 load_dotenv()
+# 初始化openai的客户端
+client = OpenAI(
+    api_key=os.environ.get("OPENAI_API_KEY")
+)
 
-# 获取环境变量中的 API 密钥
-api_key = os.getenv("OPENAI_API_KEY")
+emotion_prompts = {
+    "angry": "请给我一段安慰生气情绪的句子，使用中文回答。请告诉他你理解他的愤怒，并且会支持他度过这段时间。你可以举例说明如何理解和支持对方。",
+    "happy": "请给我一段安慰开心情绪的句子，使用中文回答。请表达你对他的开心感到高兴，并且愿意和他一起庆祝这个时刻。你可以描述一些庆祝的具体方式。",
+    "neutral": "请给我一段安慰平静情绪的句子，使用中文回答。请表达你对他现状的支持，并且愿意随时倾听他的心声。你可以详细描述如何提供支持。",
+    "sad": "请给我一段安慰悲伤情绪的句子，使用中文回答。请告诉他你理解他的痛苦，并且会在他身边陪伴，帮助他度过这段难关。你可以详细描述如何陪伴和支持对方。",
+    "surprise": "请给我一段安慰惊讶情绪的句子，使用中文回答。请告诉他你理解他的惊讶，并且会和他一起面对新的变化。你可以详细描述如何一起面对这些变化。"
+}
 
-# 初始化 OpenAI 客户端
-client = openai(api_key=api_key)
 
-
-def get_comforting_message(emotion):
-    prompt = f"请给我一段安慰{emotion}情绪的句子，使用中文回答。"
-    response = openai.ChatCompletion.create(
+def get_comforting_message(emotion, prompt):
+    response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[
-            {"role": "system", "content": "你是一个亲人，专门安慰人的情绪。"},
+            {"role": "system", "content": "你是一个心理专家，专门安慰别人的情绪。"},
             {"role": "user", "content": prompt}
         ],
-        max_tokens=50,
         n=1,
         stop=None,
-        temperature=0.7,
+        temperature=0.5,
     )
-    message = response.choices[0].message['content'].strip()
+    message = response.choices[0].message.content.strip()
     return message
 
 
@@ -144,14 +144,24 @@ RTC_CONFIGURATION = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.goog
 # 定义一个继承自VideoTransformerBase的类，用于处理视频帧
 class Faceemotion(VideoTransformerBase):
 
-    def __int__(self):
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
         self.buffer = []  # 用于存储过去几帧的情绪预测结果
         self.buffer_size = 30  # 缓冲区大小，表示需要捕捉30帧
         self.final_emotion = "neutral"
         self.final_message = ""
+        self.stop_processing = False
+        self.message_requested = False
+
+    def request_message(self):
+        self.final_message = get_comforting_message(self.final_emotion,
+                                                    "请给我一段安慰生气情绪的句子，使用中文回答。请告诉他你理解他的愤怒，并且会支持他度过这段时间。你可以举例说明如何理解和支持对方。")
+        self.buffer = []
 
     # 定义一个方法处理每一帧视频，self是类的实例，frame是当前视频帧
-    def transform(self, frame):
+    def recv(self, frame):
         # 将视频帧转换为NumPy数组格式(BGR，每个像素包含蓝、绿、红三种颜色)。NumPy数组是OpenCV处理图像的标准格式。
         img = frame.to_ndarray(format="bgr24")
 
@@ -210,11 +220,12 @@ class Faceemotion(VideoTransformerBase):
                 finalout = emotion_dict[maxindex]
 
                 self.buffer.append(finalout)
-                if len(self.buffer) > self.buffer_size:
-                    self.buffer.pop(0)
-                if len(self.buffer) == self.buffer_size:
+
+                if len(self.buffer) >= self.buffer_size:
                     self.final_emotion = max(set(self.buffer), key=self.buffer.count)
-                    self.final_message = get_comforting_message(self.final_emotion)
+                    if not self.message_requested:
+                        self.message_requested = True
+                        self.request_message()
 
                 # 将情绪标签转换为字符串，方便在图像上绘制
                 # output = str(finalout)
@@ -228,14 +239,14 @@ class Faceemotion(VideoTransformerBase):
             # 1是字体大小，(0, 255, 0)是文本颜色(绿色)
             # 2是文本线条粗细。
             cv2.putText(img, self.final_emotion, label_position, cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            cv2.putText(img, self.final_message, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            # cv2.putText(img, self.final_message, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
             # 获取并显示安慰语句
             # message = get_comforting_message(output)
             # cv2.putText(frame, message, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
         # 返回带有绘制矩形框和情绪标签的图像帧，这一帧将显示在WebRTC视频流中
-        return img
+        return VideoFrame.from_ndarray(img, format="bgr24")
 
 
 # 主函数
@@ -274,8 +285,17 @@ def main():
                               video_processor_factory=Faceemotion)
 
         if ctx.video_processor:
-            st.write("检测到的情绪：", ctx.video_processor.final_emotion)
-            st.write("安慰话语：", ctx.video_processor.final_message)
+
+            # 获取对应情绪的提示语
+            if ctx.video_processor.final_emotion in emotion_prompts:
+                prompt = emotion_prompts[ctx.video_processor.final_emotion]
+                comforting_message = get_comforting_message(ctx.video_processor.final_emotion, prompt)
+                st.write("检测到的情绪：", ctx.video_processor.final_emotion)
+
+                st.write("检测到的情绪：", ctx.video_processor.final_emotion)
+                st.write("安慰话语：", comforting_message)
+            else:
+                print(f"未找到对应的提示语: {ctx.video_processor.final_emotion}")
 
     elif choice == "关于":
 
